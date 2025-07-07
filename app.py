@@ -2,6 +2,7 @@
 # - Accepts multiple files
 # - Users define max total output size
 # - Compresses PDFs selectively using Ghostscript for stronger compression
+# - Accepts ZIPs and extracts their contents
 
 import streamlit as st
 import os
@@ -25,10 +26,10 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # --- Utility Functions ---
 def compress_pdf_ghostscript(input_path, output_path, quality="recommended"):
     quality_map = {
-        "low": "/printer",            # ~60% compression
-        "recommended": "/ebook",     # ~75% compression
-        "high": "/screen",            # ~95% compression
-        "ultra": "/screen"            # ~98% compression with DPI override
+        "low": "/printer",
+        "recommended": "/ebook",
+        "high": "/screen",
+        "ultra": "/screen"
     }
     dpi_flags = {
         "ultra": ["-dDownsampleColorImages=true", "-dColorImageResolution=50"]
@@ -51,26 +52,40 @@ def compress_pdf_ghostscript(input_path, output_path, quality="recommended"):
     except subprocess.CalledProcessError:
         shutil.copy(input_path, output_path)
 
+def extract_zip(file, destination):
+    with zipfile.ZipFile(file, 'r') as zip_ref:
+        zip_ref.extractall(destination)
 
 def process_files_to_target_size(files, target_size, compression_level):
     temp_dir = Path(OUTPUT_DIR)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    copied = []
-    total_size = 0
-
     for uploaded_file in files:
         extension = uploaded_file.name.lower().split(".")[-1]
         file_path = temp_dir / uploaded_file.name
+
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
 
+        # If it's a zip, extract it and delete the zip
+        if extension == "zip":
+            extract_zip(file_path, temp_dir)
+            file_path.unlink()
+
+    # Scan all files again after ZIP extraction
+    all_files = list(temp_dir.glob("*"))
+    copied = []
+    total_size = 0
+
+    for file_path in all_files:
+        extension = file_path.suffix.lower()
         file_size = file_path.stat().st_size
+
         if total_size + file_size <= target_size:
             copied.append(file_path)
             total_size += file_size
-        elif extension == "pdf":
-            compressed_path = temp_dir / f"compressed_{uploaded_file.name}"
+        elif extension == ".pdf":
+            compressed_path = temp_dir / f"compressed_{file_path.name}"
             compress_pdf_ghostscript(file_path, compressed_path, compression_level)
             compressed_size = compressed_path.stat().st_size
             if total_size + compressed_size <= target_size:
@@ -79,7 +94,6 @@ def process_files_to_target_size(files, target_size, compression_level):
                 file_path.unlink()
             else:
                 compressed_path.unlink()
-                file_path.unlink()
         else:
             file_path.unlink()
 
@@ -88,7 +102,6 @@ def process_files_to_target_size(files, target_size, compression_level):
         return None
 
     return copied
-
 
 def zip_files(file_paths, zip_name="Final_Share.zip"):
     zip_buffer = BytesIO()
