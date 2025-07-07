@@ -1,17 +1,17 @@
 # Final Streamlit app with email-size optimization functionality
 # - Accepts multiple files
 # - Users define max total output size
-# - Compresses PDFs selectively using pikepdf
+# - Compresses PDFs selectively using Ghostscript for stronger compression
 
 import streamlit as st
 import os
 import shutil
+import subprocess
 from pathlib import Path
 import humanfriendly
 import uuid
 from io import BytesIO
 import zipfile
-import pikepdf
 
 # --- Setup persistent session directory ---
 SESSION_ID = st.session_state.get("session_id", str(uuid.uuid4()))
@@ -23,16 +23,26 @@ os.makedirs(INPUT_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # --- Utility Functions ---
-def compress_pdf(input_path, output_path, compression_level="recommended"):
+def compress_pdf_ghostscript(input_path, output_path, quality="recommended"):
     quality_map = {
-        "low": 72,
-        "recommended": 120,
-        "high": 150
+        "low": "/screen",
+        "recommended": "/ebook",
+        "high": "/printer"
     }
+    quality_flag = quality_map.get(quality.lower(), "/ebook")
     try:
-        with pikepdf.open(input_path) as pdf:
-            pdf.save(output_path, optimize_version=True, compress_streams=True)
-    except Exception as e:
+        subprocess.run([
+            "gs",
+            "-sDEVICE=pdfwrite",
+            "-dCompatibilityLevel=1.4",
+            f"-dPDFSETTINGS={quality_flag}",
+            "-dNOPAUSE",
+            "-dQUIET",
+            "-dBATCH",
+            f"-sOutputFile={output_path}",
+            str(input_path)
+        ], check=True)
+    except subprocess.CalledProcessError as e:
         shutil.copy(input_path, output_path)
 
 
@@ -55,7 +65,7 @@ def process_files_to_target_size(files, target_size, compression_level):
             total_size += file_size
         elif extension == "pdf":
             compressed_path = temp_dir / f"compressed_{uploaded_file.name}"
-            compress_pdf(file_path, compressed_path, compression_level)
+            compress_pdf_ghostscript(file_path, compressed_path, compression_level)
             compressed_size = compressed_path.stat().st_size
             if total_size + compressed_size <= target_size:
                 copied.append(compressed_path)
@@ -67,7 +77,8 @@ def process_files_to_target_size(files, target_size, compression_level):
         else:
             file_path.unlink()
 
-    if len(copied) < len(files):
+    final_total = sum(f.stat().st_size for f in copied)
+    if final_total > target_size:
         return None
 
     return copied
