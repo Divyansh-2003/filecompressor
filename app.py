@@ -49,8 +49,9 @@ def compress_pdf_ghostscript(input_path, output_path, quality="recommended"):
             f"-sOutputFile={output_path}",
             str(input_path)
         ], check=True)
+        return output_path if output_path.exists() else input_path
     except subprocess.CalledProcessError:
-        shutil.copy(input_path, output_path)
+        return input_path
 
 def extract_zip(file, destination):
     with zipfile.ZipFile(file, 'r') as zip_ref:
@@ -88,14 +89,12 @@ def process_files_to_target_size(files, target_size):
                 file_size = file_path.stat().st_size
 
                 if extension == ".pdf":
-                    compressed_path = file_path.parent / f"compressed_{file_path.name}"
-                    compress_pdf_ghostscript(file_path, compressed_path, level)
-                    if compressed_path.exists():
-                        compressed_size = compressed_path.stat().st_size
-                        if total_size + compressed_size <= target_size:
-                            selected_files.append(compressed_path)
-                            total_size += compressed_size
-                        compressed_path.rename(file_path)
+                    compressed_path = file_path.with_name(f"compressed_{file_path.name}")
+                    final_path = compress_pdf_ghostscript(file_path, compressed_path, level)
+                    final_size = final_path.stat().st_size
+                    if total_size + final_size <= target_size:
+                        selected_files.append(final_path)
+                        total_size += final_size
                 elif total_size + file_size <= target_size:
                     selected_files.append(file_path)
                     total_size += file_size
@@ -110,7 +109,8 @@ def zip_files(file_paths, zip_name="Final_Share.zip"):
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for file_path in file_paths:
             if file_path.exists():
-                zf.write(file_path, arcname=file_path.name)
+                arcname = file_path.relative_to(OUTPUT_DIR)
+                zf.write(file_path, arcname=arcname)
     zip_buffer.seek(0)
     return zip_buffer
 
