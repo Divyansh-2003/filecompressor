@@ -33,14 +33,12 @@ def split_pdf_by_pages(file_path, max_size, output_dir):
     target_dir = Path(output_dir) / filename
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    writer = PyPDF2.PdfWriter()
     part_num = 1
-    current_size = 0
-    parts = []
+    writer = PyPDF2.PdfWriter()
+    temp_path = target_dir / f"{filename}_part{part_num}.pdf"
 
-    for i in range(total_pages):
-        writer.add_page(reader.pages[i])
-        temp_path = target_dir / f"{filename}_part{part_num}.pdf"
+    for i, page in enumerate(reader.pages):
+        writer.add_page(page)
         with open(temp_path, "wb") as f:
             writer.write(f)
 
@@ -48,12 +46,14 @@ def split_pdf_by_pages(file_path, max_size, output_dir):
         if size > max_size:
             temp_path.unlink()
             writer = PyPDF2.PdfWriter()
+            writer.add_page(page)
+            temp_path = target_dir / f"{filename}_part{part_num}.pdf"
+            with open(temp_path, "wb") as f:
+                writer.write(f)
+        else:
             part_num += 1
-            continue
-
-        parts.append(temp_path)
-        writer = PyPDF2.PdfWriter()
-        part_num += 1
+            writer = PyPDF2.PdfWriter()
+            temp_path = target_dir / f"{filename}_part{part_num}.pdf"
 
     return target_dir
 
@@ -81,8 +81,9 @@ def split_folder_intelligently(input_folder, max_chunk_size, output_dir, mode_pd
                     shutil.copy(file_path, dest)
                     temp_independent.append(dest)
             elif size > max_chunk_size:
-                part_dir = split_large_file_into_folder(file_path, max_chunk_size, Path(output_dir))
-                rejoinable_dirs.append(part_dir)
+                dest = Path(output_dir) / file_path.name
+                shutil.copy(file_path, dest)
+                temp_independent.append(dest)
             else:
                 dest = Path(output_dir) / file_path.name
                 shutil.copy(file_path, dest)
