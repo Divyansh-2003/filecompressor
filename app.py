@@ -2,7 +2,7 @@
 # - Accepts multiple files
 # - Users define max total output size
 # - Compresses PDFs selectively using Ghostscript for stronger compression
-# - Accepts ZIPs and extracts their contents
+# - Accepts ZIPs and extracts their contents (including nested folders)
 
 import streamlit as st
 import os
@@ -72,12 +72,15 @@ def process_files_to_target_size(files, target_size, compression_level):
             extract_zip(file_path, temp_dir)
             file_path.unlink()
 
-    # Scan all files again after ZIP extraction
-    all_files = list(temp_dir.glob("*"))
+    # Scan all files again after ZIP extraction recursively
+    all_files = list(temp_dir.rglob("*"))  # <-- FIXED: now recursively finds all files
     copied = []
     total_size = 0
 
     for file_path in all_files:
+        if file_path.is_dir():
+            continue
+
         extension = file_path.suffix.lower()
         file_size = file_path.stat().st_size
 
@@ -120,7 +123,7 @@ Upload multiple files (PDFs, DOCX, images, etc). The app will compress only the 
 so that the final archive stays within your selected total size limit (e.g. for emailing).
 """)
 
-max_size_input = st.text_input("🎯 Target Total Size (e.g., 7MB or 10MB):", "10MB")
+max_size_input = st.text_input("🌟 Target Total Size (e.g., 7MB or 10MB):", "10MB")
 try:
     target_bytes = humanfriendly.parse_size(max_size_input)
 except:
