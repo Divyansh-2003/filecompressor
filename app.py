@@ -25,24 +25,30 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # --- Utility Functions ---
 def compress_pdf_ghostscript(input_path, output_path, quality="recommended"):
     quality_map = {
-        "low": "/screen",          # ~85–90% compression
-        "recommended": "/ebook",  # ~60–75% compression
-        "high": "/printer"         # ~40–50% compression
+        "low": "/printer",            # ~60% compression
+        "recommended": "/ebook",     # ~75% compression
+        "high": "/screen",            # ~95% compression
+        "ultra": "/screen"            # ~98% compression with DPI override
+    }
+    dpi_flags = {
+        "ultra": ["-dDownsampleColorImages=true", "-dColorImageResolution=50"]
     }
     quality_flag = quality_map.get(quality.lower(), "/ebook")
+    extra_flags = dpi_flags.get(quality.lower(), [])
     try:
         subprocess.run([
             "gs",
             "-sDEVICE=pdfwrite",
             "-dCompatibilityLevel=1.4",
             f"-dPDFSETTINGS={quality_flag}",
+            *extra_flags,
             "-dNOPAUSE",
             "-dQUIET",
             "-dBATCH",
             f"-sOutputFile={output_path}",
             str(input_path)
         ], check=True)
-    except subprocess.CalledProcessError as e:
+    except subprocess.CalledProcessError:
         shutil.copy(input_path, output_path)
 
 
@@ -110,10 +116,10 @@ except:
 
 compression_level = st.sidebar.radio(
     "🛠️ PDF Compression Level",
-    ["Recommended (~75%)", "Low (~86%)", "High (~95%)"],
+    ["Recommended (~75%)", "Low (~60%)", "High (~95%)", "Ultra (~98%)"],
     index=0
 )
-level_key = compression_level.split("(")[0].strip().lower()
+level_key = compression_level.split("(~")[0].strip().lower()
 
 uploaded_files = st.file_uploader("📁 Upload Files (multiple allowed):", accept_multiple_files=True)
 
