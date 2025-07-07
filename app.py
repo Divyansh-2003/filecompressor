@@ -33,27 +33,29 @@ def split_pdf_by_pages(file_path, max_size, output_dir):
     target_dir = Path(output_dir) / filename
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    part_num = 1
     writer = PyPDF2.PdfWriter()
-    temp_path = target_dir / f"{filename}_part{part_num}.pdf"
+    part_num = 1
+    parts = []
 
     for i, page in enumerate(reader.pages):
         writer.add_page(page)
+        temp_path = target_dir / f"{filename}_part{part_num}.pdf"
         with open(temp_path, "wb") as f:
             writer.write(f)
 
         size = temp_path.stat().st_size
-        if size > max_size:
-            temp_path.unlink()
-            writer = PyPDF2.PdfWriter()
-            writer.add_page(page)
-            temp_path = target_dir / f"{filename}_part{part_num}.pdf"
+        if size > max_size and len(writer.pages) > 1:
+            writer.remove_page(-1)
             with open(temp_path, "wb") as f:
                 writer.write(f)
-        else:
+            parts.append(temp_path)
             part_num += 1
             writer = PyPDF2.PdfWriter()
-            temp_path = target_dir / f"{filename}_part{part_num}.pdf"
+            writer.add_page(page)
+        else:
+            parts.append(temp_path)
+            part_num += 1
+            writer = PyPDF2.PdfWriter()
 
     return target_dir
 
