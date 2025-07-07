@@ -71,19 +71,17 @@ def process_files_to_target_size(files, target_size):
             extract_zip(file_path, temp_dir)
             file_path.unlink()
 
-    all_files = list(temp_dir.rglob("*"))
-    copied = []
-    total_size = 0
-
     compression_levels = ["ultra", "high", "recommended", "low"]
 
     for level in compression_levels:
-        temp_dir_copy = temp_dir / f"_tmp_{level}"
-        shutil.copytree(temp_dir, temp_dir_copy)
-        total_size = 0
-        copied = []
+        working_dir = temp_dir / f"_tmp_{level}"
+        if working_dir.exists():
+            shutil.rmtree(working_dir)
+        shutil.copytree(temp_dir, working_dir)
 
-        for file_path in temp_dir_copy.rglob("*"):
+        selected_files, total_size = [], 0
+
+        for file_path in working_dir.rglob("*"):
             if file_path.is_dir():
                 continue
 
@@ -93,19 +91,18 @@ def process_files_to_target_size(files, target_size):
             if extension == ".pdf":
                 compressed_path = file_path.parent / f"compressed_{file_path.name}"
                 compress_pdf_ghostscript(file_path, compressed_path, level)
-                compressed_size = compressed_path.stat().st_size
-                if total_size + compressed_size <= target_size:
-                    copied.append(compressed_path)
-                    total_size += compressed_size
-                compressed_path.rename(file_path)
+                if compressed_path.exists():
+                    compressed_size = compressed_path.stat().st_size
+                    if total_size + compressed_size <= target_size:
+                        selected_files.append(compressed_path)
+                        total_size += compressed_size
+                    compressed_path.rename(file_path)
             elif total_size + file_size <= target_size:
-                copied.append(file_path)
+                selected_files.append(file_path)
                 total_size += file_size
 
         if total_size <= target_size:
-            return copied
-
-        shutil.rmtree(temp_dir_copy)
+            return selected_files
 
     return None
 
@@ -113,7 +110,8 @@ def zip_files(file_paths, zip_name="Final_Share.zip"):
     zip_buffer = BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for file_path in file_paths:
-            zf.write(file_path, arcname=file_path.name)
+            if file_path.exists():
+                zf.write(file_path, arcname=file_path.name)
     zip_buffer.seek(0)
     return zip_buffer
 
