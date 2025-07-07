@@ -1,20 +1,17 @@
-# Final Streamlit app with full functionality
-# - Intelligent chunking
-# - Separate handling for large files
-# - Rejoinable vs Independent zips
-# - Flat structure in final ALL_CHUNKS.zip with README
-
-# --- STREAMLIT APP START ---
+# Final Streamlit app with email-size optimization functionality
+# - Accepts multiple files
+# - Users define max total output size
+# - Compresses PDFs selectively using pikepdf
 
 import streamlit as st
 import os
-import zipfile
 import shutil
 from pathlib import Path
 import humanfriendly
 import uuid
 from io import BytesIO
-import PyPDF2
+import zipfile
+import pikepdf
 
 # --- Setup persistent session directory ---
 SESSION_ID = st.session_state.get("session_id", str(uuid.uuid4()))
@@ -26,96 +23,95 @@ os.makedirs(INPUT_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # --- Utility Functions ---
-def split_pdf_by_pages(file_path, max_size, output_dir):
-    reader = PyPDF2.PdfReader(file_path)
-    total_pages = len(reader.pages)
-    filename = file_path.stem
-    target_dir = Path(output_dir) / filename
-    target_dir.mkdir(parents=True, exist_ok=True)
+def compress_pdf(input_path, output_path, compression_level="recommended"):
+    quality_map = {
+        "low": 72,
+        "recommended": 120,
+        "high": 150
+    }
+    try:
+        with pikepdf.open(input_path) as pdf:
+            pdf.save(output_path, optimize_version=True, compress_streams=True)
+    except Exception as e:
+        shutil.copy(input_path, output_path)
 
-    writer = PyPDF2.PdfWriter()
-    part_num = 1
-    current_size = 0
-    parts = []
 
-    for i in range(total_pages):
-        writer.add_page(reader.pages[i])
-        temp_path = target_dir / f"{filename}_part{part_num}.pdf"
-        with open(temp_path, "wb") as f:
-            writer.write(f)
+def process_files_to_target_size(files, target_size, compression_level):
+    temp_dir = Path(OUTPUT_DIR)
+    temp_dir.mkdir(parents=True, exist_ok=True)
 
-        size = temp_path.stat().st_size
-        if size > max_size:
-            temp_path.unlink()
-            writer = PyPDF2.PdfWriter()
-            part_num += 1
-            continue
+    copied = []
+    total_size = 0
 
-        parts.append(temp_path)
-        writer = PyPDF2.PdfWriter()
-        part_num += 1
+    for uploaded_file in files:
+        extension = uploaded_file.name.lower().split(".")[-1]
+        file_path = temp_dir / uploaded_file.name
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
 
-    return target_dir
-
-def split_folder_intelligently(input_folder, max_chunk_size, output_dir, mode_pdf="compress", mode_office="none"):
-    rejoinable_dirs, independent = [], []
-    temp_independent = []
-
-    for file_path in Path(input_folder).rglob("*"):
-        if file_path.is_file():
-            extension = file_path.suffix.lower()
-            size = file_path.stat().st_size
-
-            if extension in [".pptx", ".docx", ".xlsx", ".zip"]:
-                continue
-
-            if extension == ".pdf":
-                if mode_pdf == "split" and size > max_chunk_size:
-                    part_dir = split_pdf_by_pages(file_path, max_chunk_size, Path(output_dir))
-                    rejoinable_dirs.append(part_dir)
-                elif mode_pdf == "compress" and size > (3 * max_chunk_size):
-                    part_dir = split_pdf_by_pages(file_path, max_chunk_size, Path(output_dir))
-                    rejoinable_dirs.append(part_dir)
-                else:
-                    dest = Path(output_dir) / file_path.name
-                    shutil.copy(file_path, dest)
-                    temp_independent.append(dest)
-            elif size > max_chunk_size:
-                part_dir = split_large_file_into_folder(file_path, max_chunk_size, Path(output_dir))
-                rejoinable_dirs.append(part_dir)
+        file_size = file_path.stat().st_size
+        if total_size + file_size <= target_size:
+            copied.append(file_path)
+            total_size += file_size
+        elif extension == "pdf":
+            compressed_path = temp_dir / f"compressed_{uploaded_file.name}"
+            compress_pdf(file_path, compressed_path, compression_level)
+            compressed_size = compressed_path.stat().st_size
+            if total_size + compressed_size <= target_size:
+                copied.append(compressed_path)
+                total_size += compressed_size
+                file_path.unlink()
             else:
-                dest = Path(output_dir) / file_path.name
-                shutil.copy(file_path, dest)
-                temp_independent.append(dest)
+                compressed_path.unlink()
+                file_path.unlink()
+        else:
+            file_path.unlink()
 
-    zip_parts = []
-    current_chunk, current_size, part_num = [], 0, 1
-    for file in temp_independent:
-        f_size = file.stat().st_size
-        if current_size + f_size > max_chunk_size and current_chunk:
-            zip_name = f"independent_part{part_num}.zip"
-            zip_path = Path(output_dir) / zip_name
-            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                for f in current_chunk:
-                    zipf.write(f, arcname=f.name)
-            zip_parts.append(zip_path.name)
-            for f in current_chunk:
-                f.unlink()
-            current_chunk, current_size, part_num = [], 0, part_num + 1
+    if len(copied) < len(files):
+        return None
 
-        current_chunk.append(file)
-        current_size += f_size
+    return copied
 
-    if current_chunk:
-        zip_name = f"independent_part{part_num}.zip"
-        zip_path = Path(output_dir) / zip_name
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            for f in current_chunk:
-                zipf.write(f, arcname=f.name)
-        zip_parts.append(zip_path.name)
-        for f in current_chunk:
-            f.unlink()
 
-    return rejoinable_dirs, zip_parts
+def zip_files(file_paths, zip_name="Final_Share.zip"):
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file_path in file_paths:
+            zf.write(file_path, arcname=file_path.name)
+    zip_buffer.seek(0)
+    return zip_buffer
 
-# Keep rest of the code unchanged for Streamlit setup and UI
+# --- Streamlit UI ---
+st.set_page_config(page_title="Email File Set Optimizer", layout="wide")
+st.title("📧 Email File Size Optimizer")
+
+st.markdown("""
+Upload multiple files (PDFs, DOCX, images, etc). The app will compress only the PDFs
+so that the final archive stays within your selected total size limit (e.g. for emailing).
+""")
+
+max_size_input = st.text_input("🎯 Target Total Size (e.g., 7MB or 10MB):", "10MB")
+try:
+    target_bytes = humanfriendly.parse_size(max_size_input)
+except:
+    st.error("Invalid size format. Use like 7MB, 10MB")
+    st.stop()
+
+compression_level = st.sidebar.radio("🛠️ PDF Compression Level", ["Recommended", "Low", "High"], index=0)
+level_key = compression_level.lower()
+
+uploaded_files = st.file_uploader("📁 Upload Files (multiple allowed):", accept_multiple_files=True)
+
+if uploaded_files and st.button("🚀 Optimize and Download"):
+    if os.path.exists(BASE_TEMP_DIR):
+        shutil.rmtree(BASE_TEMP_DIR)
+    os.makedirs(INPUT_DIR, exist_ok=True)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    selected_files = process_files_to_target_size(uploaded_files, target_bytes, level_key)
+    if selected_files is None:
+        st.error("❌ Unable to fit all files within the selected size. Please remove some files and try again.")
+    else:
+        final_zip = zip_files(selected_files)
+        st.success(f"✅ Done! {len(selected_files)} files included in the final zip.")
+        st.download_button("📦 Download ZIP", final_zip, file_name="Final_Share.zip", mime="application/zip")
