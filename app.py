@@ -25,9 +25,9 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # --- Utility Functions ---
 def compress_pdf_ghostscript(input_path, output_path, quality="recommended"):
     quality_map = {
-        "low": "/screen",
-        "recommended": "/ebook",
-        "high": "/printer"
+        "low": "/screen",          # ~85–90% compression
+        "recommended": "/ebook",  # ~60–75% compression
+        "high": "/printer"         # ~40–50% compression
     }
     quality_flag = quality_map.get(quality.lower(), "/ebook")
     try:
@@ -108,8 +108,12 @@ except:
     st.error("Invalid size format. Use like 7MB, 10MB")
     st.stop()
 
-compression_level = st.sidebar.radio("🛠️ PDF Compression Level", ["Recommended", "Low", "High"], index=0)
-level_key = compression_level.lower()
+compression_level = st.sidebar.radio(
+    "🛠️ PDF Compression Level",
+    ["Recommended (~75%)", "Low (~86%)", "High (~95%)"],
+    index=0
+)
+level_key = compression_level.split("(")[0].strip().lower()
 
 uploaded_files = st.file_uploader("📁 Upload Files (multiple allowed):", accept_multiple_files=True)
 
