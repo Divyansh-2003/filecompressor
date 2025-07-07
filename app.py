@@ -81,25 +81,24 @@ def process_files_to_target_size(files, target_size):
 
         selected_files, total_size = [], 0
 
-        for file_path in working_dir.rglob("*"):
-            if file_path.is_dir():
-                continue
+        for root, _, files_in_dir in os.walk(working_dir):
+            for fname in files_in_dir:
+                file_path = Path(root) / fname
+                extension = file_path.suffix.lower()
+                file_size = file_path.stat().st_size
 
-            extension = file_path.suffix.lower()
-            file_size = file_path.stat().st_size
-
-            if extension == ".pdf":
-                compressed_path = file_path.parent / f"compressed_{file_path.name}"
-                compress_pdf_ghostscript(file_path, compressed_path, level)
-                if compressed_path.exists():
-                    compressed_size = compressed_path.stat().st_size
-                    if total_size + compressed_size <= target_size:
-                        selected_files.append(compressed_path)
-                        total_size += compressed_size
-                    compressed_path.rename(file_path)
-            elif total_size + file_size <= target_size:
-                selected_files.append(file_path)
-                total_size += file_size
+                if extension == ".pdf":
+                    compressed_path = file_path.parent / f"compressed_{file_path.name}"
+                    compress_pdf_ghostscript(file_path, compressed_path, level)
+                    if compressed_path.exists():
+                        compressed_size = compressed_path.stat().st_size
+                        if total_size + compressed_size <= target_size:
+                            selected_files.append(compressed_path)
+                            total_size += compressed_size
+                        compressed_path.rename(file_path)
+                elif total_size + file_size <= target_size:
+                    selected_files.append(file_path)
+                    total_size += file_size
 
         if total_size <= target_size:
             return selected_files
