@@ -56,7 +56,7 @@ def extract_zip(file, destination):
     with zipfile.ZipFile(file, 'r') as zip_ref:
         zip_ref.extractall(destination)
 
-def process_files_to_target_size(files, target_size, compression_level):
+def process_files_to_target_size(files, target_size):
     temp_dir = Path(OUTPUT_DIR)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -67,44 +67,47 @@ def process_files_to_target_size(files, target_size, compression_level):
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
 
-        # If it's a zip, extract it and delete the zip
         if extension == "zip":
             extract_zip(file_path, temp_dir)
             file_path.unlink()
 
-    # Scan all files again after ZIP extraction recursively
-    all_files = list(temp_dir.rglob("*"))  # <-- FIXED: now recursively finds all files
+    all_files = list(temp_dir.rglob("*"))
     copied = []
     total_size = 0
 
-    for file_path in all_files:
-        if file_path.is_dir():
-            continue
+    compression_levels = ["ultra", "high", "recommended", "low"]
 
-        extension = file_path.suffix.lower()
-        file_size = file_path.stat().st_size
+    for level in compression_levels:
+        temp_dir_copy = temp_dir / f"_tmp_{level}"
+        shutil.copytree(temp_dir, temp_dir_copy)
+        total_size = 0
+        copied = []
 
-        if total_size + file_size <= target_size:
-            copied.append(file_path)
-            total_size += file_size
-        elif extension == ".pdf":
-            compressed_path = temp_dir / f"compressed_{file_path.name}"
-            compress_pdf_ghostscript(file_path, compressed_path, compression_level)
-            compressed_size = compressed_path.stat().st_size
-            if total_size + compressed_size <= target_size:
-                copied.append(compressed_path)
-                total_size += compressed_size
-                file_path.unlink()
-            else:
-                compressed_path.unlink()
-        else:
-            file_path.unlink()
+        for file_path in temp_dir_copy.rglob("*"):
+            if file_path.is_dir():
+                continue
 
-    final_total = sum(f.stat().st_size for f in copied)
-    if final_total > target_size:
-        return None
+            extension = file_path.suffix.lower()
+            file_size = file_path.stat().st_size
 
-    return copied
+            if extension == ".pdf":
+                compressed_path = file_path.parent / f"compressed_{file_path.name}"
+                compress_pdf_ghostscript(file_path, compressed_path, level)
+                compressed_size = compressed_path.stat().st_size
+                if total_size + compressed_size <= target_size:
+                    copied.append(compressed_path)
+                    total_size += compressed_size
+                compressed_path.rename(file_path)
+            elif total_size + file_size <= target_size:
+                copied.append(file_path)
+                total_size += file_size
+
+        if total_size <= target_size:
+            return copied
+
+        shutil.rmtree(temp_dir_copy)
+
+    return None
 
 def zip_files(file_paths, zip_name="Final_Share.zip"):
     zip_buffer = BytesIO()
@@ -130,13 +133,6 @@ except:
     st.error("Invalid size format. Use like 7MB, 10MB")
     st.stop()
 
-compression_level = st.sidebar.radio(
-    "🛠️ PDF Compression Level",
-    ["Recommended (~75%)", "Low (~60%)", "High (~95%)", "Ultra (~98%)"],
-    index=0
-)
-level_key = compression_level.split("(~")[0].strip().lower()
-
 uploaded_files = st.file_uploader("📁 Upload Files (multiple allowed):", accept_multiple_files=True)
 
 if uploaded_files and st.button("🚀 Optimize and Download"):
@@ -145,7 +141,7 @@ if uploaded_files and st.button("🚀 Optimize and Download"):
     os.makedirs(INPUT_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    selected_files = process_files_to_target_size(uploaded_files, target_bytes, level_key)
+    selected_files = process_files_to_target_size(uploaded_files, target_bytes)
     if selected_files is None:
         st.error("❌ Unable to fit all files within the selected size. Please remove some files and try again.")
     else:
