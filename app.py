@@ -1,13 +1,13 @@
 import streamlit as st
 import os
 import shutil
+import subprocess
 import zipfile
-import fitz  # PyMuPDF
 from pathlib import Path
 from io import BytesIO
 import uuid
 
-# Setup session-based folders
+# Session-based temp directories
 SESSION_ID = st.session_state.get("session_id", str(uuid.uuid4()))
 st.session_state["session_id"] = SESSION_ID
 BASE_TEMP_DIR = f"temp_storage_{SESSION_ID}"
@@ -16,27 +16,33 @@ OUTPUT_DIR = os.path.join(BASE_TEMP_DIR, "output")
 os.makedirs(INPUT_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Compress PDF using PyMuPDF (image-based)
-def compress_pdf_pymupdf(input_path, output_path, dpi=100):
-    doc = fitz.open(input_path)
-    images = []
-    for page in doc:
-        pix = page.get_pixmap(dpi=dpi)
-        img_bytes = pix.tobytes("png")
-        images.append(img_bytes)
-    doc.close()
+# Ghostscript compression
+def compress_pdf_ghostscript(input_path, output_path, quality="recommended"):
+    quality_map = {
+        "recommended": "/ebook",
+        "high": "/screen",
+        "low": "/printer"
+    }
+    quality_flag = quality_map.get(quality.lower(), "/ebook")
+    try:
+        subprocess.run([
+            "gs",
+            "-sDEVICE=pdfwrite",
+            "-dCompatibilityLevel=1.4",
+            f"-dPDFSETTINGS={quality_flag}",
+            "-dNOPAUSE", "-dQUIET", "-dBATCH",
+            f"-sOutputFile={output_path}",
+            str(input_path)
+        ], check=True)
+    except subprocess.CalledProcessError:
+        shutil.copy(input_path, output_path)
 
-    pdf_doc = fitz.open()
-    for img_data in images:
-        img_pdf = fitz.open("pdf", fitz.open("png", img_data).convert_to_pdf())
-        pdf_doc.insert_pdf(img_pdf)
-    pdf_doc.save(output_path)
-    pdf_doc.close()
-
+# Handle ZIP
 def extract_zip(file_path, dest):
     with zipfile.ZipFile(file_path, 'r') as zip_ref:
         zip_ref.extractall(dest)
 
+# Save uploads
 def save_uploaded_files(uploaded_files, save_dir):
     for uploaded_file in uploaded_files:
         save_path = Path(save_dir) / uploaded_file.name
@@ -46,9 +52,11 @@ def save_uploaded_files(uploaded_files, save_dir):
             extract_zip(save_path, save_dir)
             os.remove(save_path)
 
+# Walk all files
 def get_all_files(folder_path):
     return [Path(root) / f for root, _, files in os.walk(folder_path) for f in files]
 
+# Create ZIP preserving structure
 def preserve_zip_structure(file_list, base_folder):
     zip_buffer = BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
@@ -59,15 +67,15 @@ def preserve_zip_structure(file_list, base_folder):
     return zip_buffer
 
 # UI
-st.set_page_config(page_title="📄 PDF Compressor (Cloud)", layout="wide")
-st.title("📄 PDF Compressor & Folder Zipper (Cloud-Ready)")
+st.set_page_config(page_title="📄 PDF Compressor", layout="wide")
+st.title("📄 Ghostscript PDF Compressor (Folder-preserving)")
 
-st.sidebar.header("🛠️ Compression Settings")
-pymupdf_dpi = st.sidebar.slider("Image DPI (lower = smaller size)", 50, 150, 100)
+st.sidebar.header("Compression Settings")
+quality = st.sidebar.selectbox("Choose compression quality:", ["recommended", "high", "low"])
 
 uploaded_files = st.file_uploader("📁 Upload files or ZIPs", accept_multiple_files=True)
 
-if uploaded_files and st.button("🚀 Compress & Download"):
+if uploaded_files and st.button("🚀 Compress and Download"):
     shutil.rmtree(BASE_TEMP_DIR, ignore_errors=True)
     os.makedirs(INPUT_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -84,7 +92,7 @@ if uploaded_files and st.button("🚀 Compress & Download"):
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         if file_path.suffix.lower() == ".pdf":
-            compress_pdf_pymupdf(file_path, out_path, dpi=pymupdf_dpi)
+            compress_pdf_ghostscript(file_path, out_path, quality)
         else:
             shutil.copy(file_path, out_path)
 
