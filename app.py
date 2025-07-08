@@ -2,12 +2,12 @@ import streamlit as st
 import os
 import shutil
 import subprocess
-import zipfile
 from pathlib import Path
-from io import BytesIO
 import uuid
+from io import BytesIO
+import zipfile
 
-# Session-based temp directories
+# Setup persistent session directory
 SESSION_ID = st.session_state.get("session_id", str(uuid.uuid4()))
 st.session_state["session_id"] = SESSION_ID
 BASE_TEMP_DIR = f"temp_storage_{SESSION_ID}"
@@ -16,89 +16,100 @@ OUTPUT_DIR = os.path.join(BASE_TEMP_DIR, "output")
 os.makedirs(INPUT_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Ghostscript compression
-def compress_pdf_ghostscript(input_path, output_path, quality="recommended"):
-    quality_map = {
-        "recommended": "/ebook",
-        "high": "/screen",
-        "low": "/printer"
-    }
-    quality_flag = quality_map.get(quality.lower(), "/ebook")
+QUALITY_MAP = {
+    "Recommended": "/ebook",
+    "High": "/screen",
+    "Ultra": "/screen"
+}
+
+DPI_FLAGS = {
+    "Ultra": ["-dDownsampleColorImages=true", "-dColorImageResolution=50"]
+}
+
+def compress_pdf(input_path, output_path, quality="Recommended"):
+    quality_flag = QUALITY_MAP.get(quality, "/ebook")
+    extra_flags = DPI_FLAGS.get(quality, [])
     try:
         subprocess.run([
             "gs",
             "-sDEVICE=pdfwrite",
             "-dCompatibilityLevel=1.4",
             f"-dPDFSETTINGS={quality_flag}",
-            "-dNOPAUSE", "-dQUIET", "-dBATCH",
+            *extra_flags,
+            "-dNOPAUSE",
+            "-dQUIET",
+            "-dBATCH",
             f"-sOutputFile={output_path}",
             str(input_path)
         ], check=True)
     except subprocess.CalledProcessError:
         shutil.copy(input_path, output_path)
 
-# Handle ZIP
-def extract_zip(file_path, dest):
-    with zipfile.ZipFile(file_path, 'r') as zip_ref:
-        zip_ref.extractall(dest)
+def extract_zip(file, destination):
+    with zipfile.ZipFile(file, 'r') as zip_ref:
+        zip_ref.extractall(destination)
 
-# Save uploads
-def save_uploaded_files(uploaded_files, save_dir):
-    for uploaded_file in uploaded_files:
-        save_path = Path(save_dir) / uploaded_file.name
-        with open(save_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        if uploaded_file.name.endswith(".zip"):
-            extract_zip(save_path, save_dir)
-            os.remove(save_path)
-
-# Walk all files
-def get_all_files(folder_path):
-    return [Path(root) / f for root, _, files in os.walk(folder_path) for f in files]
-
-# Create ZIP preserving structure
-def preserve_zip_structure(file_list, base_folder):
+def zip_files_with_structure(base_folder):
     zip_buffer = BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
-        for file in file_list:
-            rel_path = Path(file).relative_to(base_folder)
-            zipf.write(file, arcname=str(rel_path))
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _, files in os.walk(base_folder):
+            for f in files:
+                full_path = Path(root) / f
+                relative_path = full_path.relative_to(base_folder)
+                zf.write(full_path, arcname=str(relative_path))
     zip_buffer.seek(0)
     return zip_buffer
 
-# UI
-st.set_page_config(page_title="📄 PDF Compressor", layout="wide")
-st.title("📄 Ghostscript PDF Compressor (Folder-preserving)")
+def process_files(files, level):
+    shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    temp_dir = Path(OUTPUT_DIR)
+
+    # Step 1: Save and extract ZIPs
+    for file in files:
+        ext = file.name.split(".")[-1].lower()
+        path = temp_dir / file.name
+        with open(path, "wb") as f:
+            f.write(file.getbuffer())
+        if ext == "zip":
+            extract_zip(path, temp_dir)
+            path.unlink()
+
+    # Step 2: Count total files for progress bar
+    all_files = []
+    for root, _, file_list in os.walk(temp_dir):
+        for fname in file_list:
+            all_files.append(Path(root) / fname)
+
+    progress = st.progress(0)
+    total = len(all_files)
+
+    # Step 3: Process files with progress tracking
+    for i, fpath in enumerate(all_files):
+        if fpath.suffix.lower() == ".pdf":
+            out_path = fpath.parent / f"compressed_{fpath.name}"
+            compress_pdf(fpath, out_path, level)
+            fpath.unlink()
+            out_path.rename(fpath)
+        progress.progress((i + 1) / total)
+
+    return temp_dir
+
+# --- Streamlit UI ---
+st.set_page_config(page_title="Smart File Compressor", layout="wide")
+st.title("📂 Compress Files (PDFs, ZIPs, etc.)")
 
 st.sidebar.header("Compression Settings")
-quality = st.sidebar.selectbox("Choose compression quality:", ["recommended", "high", "low"])
+level = st.sidebar.selectbox("Choose PDF Compression Level", ["Recommended", "High", "Ultra"])
 
-uploaded_files = st.file_uploader("📁 Upload files or ZIPs", accept_multiple_files=True)
+st.markdown("Upload files to compress all PDFs according to the selected level and retain folder structure.")
 
-if uploaded_files and st.button("🚀 Compress and Download"):
-    shutil.rmtree(BASE_TEMP_DIR, ignore_errors=True)
-    os.makedirs(INPUT_DIR, exist_ok=True)
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+uploaded = st.file_uploader("📁 Upload files", accept_multiple_files=True)
 
-    save_uploaded_files(uploaded_files, INPUT_DIR)
-    all_files = get_all_files(INPUT_DIR)
+if uploaded and st.button("🚀 Compress & Download"):
+    with st.spinner("Processing your files..."):
+        output_folder = process_files(uploaded, level)
 
-    processed_files = []
-    progress = st.progress(0)
-
-    for idx, file_path in enumerate(all_files):
-        rel_path = file_path.relative_to(INPUT_DIR)
-        out_path = Path(OUTPUT_DIR) / rel_path
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if file_path.suffix.lower() == ".pdf":
-            compress_pdf_ghostscript(file_path, out_path, quality)
-        else:
-            shutil.copy(file_path, out_path)
-
-        processed_files.append(out_path)
-        progress.progress((idx + 1) / len(all_files))
-
-    st.success(f"✅ Done! {len(processed_files)} files processed.")
-    zip_file = preserve_zip_structure(processed_files, OUTPUT_DIR)
-    st.download_button("📦 Download Compressed ZIP", zip_file, file_name="compressed_output.zip", mime="application/zip")
+    zip_buffer = zip_files_with_structure(output_folder)
+    st.success("✅ Done! Your compressed files are ready.")
+    st.download_button("📦 Download ZIP", zip_buffer, file_name="Compressed_Structured.zip", mime="application/zip")
