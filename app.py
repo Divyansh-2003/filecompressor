@@ -1,8 +1,8 @@
 # Final Streamlit app with email-size optimization functionality
-# - Accepts multiple files (ZIPs, PDFs, others)
-# - Compresses PDFs intelligently only when needed
-# - Estimates compression before applying to reduce processing
-# - Returns the best-fit zip containing all optimized files
+# - Accepts multiple files
+# - Users define max total output size
+# - Compresses PDFs selectively using Ghostscript for stronger compression
+# - Accepts ZIPs and extracts their contents (including nested folders)
 
 import streamlit as st
 import os
@@ -23,16 +23,10 @@ OUTPUT_DIR = os.path.join(BASE_TEMP_DIR, "output")
 os.makedirs(INPUT_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# --- Compression Estimation Factors ---
-COMPRESSION_ESTIMATES = {
-    "recommended": 0.7,  # ~30% reduction
-    "high": 0.5,         # ~50% reduction
-    "ultra": 0.35        # ~65% reduction
-}
-
 # --- Utility Functions ---
 def compress_pdf_ghostscript(input_path, output_path, quality="recommended"):
     quality_map = {
+        "low": "/printer",
         "recommended": "/ebook",
         "high": "/screen",
         "ultra": "/screen"
@@ -58,22 +52,9 @@ def compress_pdf_ghostscript(input_path, output_path, quality="recommended"):
     except subprocess.CalledProcessError:
         shutil.copy(input_path, output_path)
 
-
 def extract_zip(file, destination):
     with zipfile.ZipFile(file, 'r') as zip_ref:
         zip_ref.extractall(destination)
-
-
-def estimate_total_size(files, pdfs_only, level):
-    total = 0
-    factor = COMPRESSION_ESTIMATES.get(level, 0.7)
-    for f in files:
-        if f in pdfs_only:
-            total += f.stat().st_size * factor
-        else:
-            total += f.stat().st_size
-    return total
-
 
 def process_files_to_target_size(files, target_size):
     temp_dir = Path(OUTPUT_DIR)
@@ -90,27 +71,47 @@ def process_files_to_target_size(files, target_size):
             extract_zip(file_path, temp_dir)
             file_path.unlink()
 
-    all_files = [Path(root) / fname
-                 for root, _, files_in_dir in os.walk(temp_dir)
-                 for fname in files_in_dir]
+    compression_levels = ["ultra", "high", "recommended", "low"]
 
-    pdfs_only = [f for f in all_files if f.suffix.lower() == ".pdf"]
+    for level in compression_levels:
+        working_dir = temp_dir / f"_tmp_{level}"
+        if working_dir.exists():
+            shutil.rmtree(working_dir)
+        shutil.copytree(temp_dir, working_dir)
 
-    for level in ["recommended", "high", "ultra"]:
-        est_size = estimate_total_size(all_files, pdfs_only, level)
-        if est_size <= target_size:
-            selected_files = []
-            for file_path in all_files:
-                if file_path.suffix.lower() == ".pdf":
-                    compressed_path = file_path.parent / f"compressed_{file_path.name}"
-                    compress_pdf_ghostscript(file_path, compressed_path, level)
-                    selected_files.append(compressed_path)
-                else:
-                    selected_files.append(file_path)
+        selected_files, total_size = [], 0
+
+        all_files = [os.path.join(root, fname)
+                     for root, _, files_in_dir in os.walk(working_dir)
+                     for fname in files_in_dir]
+
+        progress = st.progress(0)
+        for i, full_path in enumerate(all_files):
+            file_path = Path(full_path)
+            extension = file_path.suffix.lower()
+            file_size = file_path.stat().st_size
+
+            if extension == ".pdf":
+                compressed_path = file_path.parent / f"compressed_{file_path.name}"
+                compress_pdf_ghostscript(file_path, compressed_path, level)
+                if compressed_path.exists():
+                    compressed_size = compressed_path.stat().st_size
+                    if total_size + compressed_size <= target_size:
+                        selected_files.append(compressed_path)
+                        total_size += compressed_size
+                    compressed_path.rename(file_path)
+            elif total_size + file_size <= target_size:
+                selected_files.append(file_path)
+                total_size += file_size
+
+            progress.progress((i + 1) / len(all_files))
+
+        if total_size <= target_size:
+            progress.empty()
             return selected_files
 
+    progress.empty()
     return None
-
 
 def zip_files(file_paths, zip_name="Final_Share.zip"):
     zip_buffer = BytesIO()
@@ -121,13 +122,12 @@ def zip_files(file_paths, zip_name="Final_Share.zip"):
     zip_buffer.seek(0)
     return zip_buffer
 
-
 # --- Streamlit UI ---
 st.set_page_config(page_title="Email File Set Optimizer", layout="wide")
 st.title("📧 Email File Size Optimizer")
 
 st.markdown("""
-Upload multiple files (PDFs, DOCX, images, ZIPs, etc). The app will compress only the PDFs
+Upload multiple files (PDFs, DOCX, images, etc). The app will compress only the PDFs
 so that the final archive stays within your selected total size limit (e.g. for emailing).
 """)
 
@@ -146,12 +146,11 @@ if uploaded_files and st.button("🚀 Optimize and Download"):
     os.makedirs(INPUT_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    with st.spinner("Optimizing files..."):
-        selected_files = process_files_to_target_size(uploaded_files, target_bytes)
-
+    selected_files = process_files_to_target_size(uploaded_files, target_bytes)
     if selected_files is None:
         st.error("❌ Unable to fit all files within the selected size. Please remove some files and try again.")
     else:
         final_zip = zip_files(selected_files)
         st.success(f"✅ Done! {len(selected_files)} files included in the final zip.")
         st.download_button("📦 Download ZIP", final_zip, file_name="Final_Share.zip", mime="application/zip")
+
