@@ -2,4 +2,3 @@ streamlit
 pikepdf
 humanfriendly
 ocrmypdf
-PyMuPDF
