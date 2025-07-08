@@ -16,16 +16,11 @@ os.makedirs(INPUT_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # --- Compression Settings ---
-# Reordered to go from lowest compression (best quality) to highest
+# Using iLovePDF's compression standards, mapped to Ghostscript settings
 COMPRESSION_LEVELS = {
-    "60": ("/prepress", 0.80), # Least compression, highest quality
-    "65": ("/prepress", 0.75),
-    "70": ("/printer", 0.70),
-    "75": ("/printer", 0.65),
-    "80": ("/ebook", 0.55),
-    "85": ("/ebook", 0.45),
-    "90": ("/screen", 0.35),
-    "95": ("/screen", 0.30)  # Most compression, lowest quality
+    "Less Compression (High Quality)": ("/prepress", 0.90),    # Corresponds to iLovePDF's "Less Compression"
+    "Recommended Compression": ("/printer", 0.70),             # Corresponds to iLovePDF's "Recommended Compression"
+    "Extreme Compression (Smallest File)": ("/screen", 0.30)   # Corresponds to iLovePDF's "Extreme Compression"
 }
 
 # --- Utility Functions ---
@@ -35,14 +30,18 @@ def compress_pdf(input_path, output_path, quality_flag, ocr=False):
         temp_path = str(output_path).replace(".pdf", "_ocr.pdf")
         try:
             # ocrmypdf will put the OCR'd PDF at temp_path
+            # Added capture_output=True, text=True for better error logging
             subprocess.run(["ocrmypdf", str(input_path), temp_path], check=True, capture_output=True, text=True)
-            temp_input = temp_path
+            temp_input = Path(temp_path) # Ensure temp_input is a Path object for consistency
         except subprocess.CalledProcessError as e:
             st.warning(f"OCR failed for {input_path.name}: {e.stderr.strip()}. Proceeding without OCR.")
             temp_input = input_path
         except FileNotFoundError:
             st.error("OCRmyPDF not found. Please ensure it's installed and in your PATH if you enable OCR.")
             temp_input = input_path # Fallback if ocrmypdf isn't installed
+        except Exception as e:
+            st.warning(f"An unexpected error occurred during OCR for {input_path.name}: {e}. Proceeding without OCR.")
+            temp_input = input_path
 
     try:
         subprocess.run([
@@ -55,14 +54,20 @@ def compress_pdf(input_path, output_path, quality_flag, ocr=False):
             "-dBATCH",
             f"-sOutputFile={output_path}",
             str(temp_input)
-        ], check=True, capture_output=True, text=True)
+        ], check=True, capture_output=True, text=True) # Added capture_output=True, text=True for better error logging
     except subprocess.CalledProcessError as e:
         st.error(f"Ghostscript compression failed for {input_path.name} with flag {quality_flag}: {e.stderr.strip()}. Copying original.")
         shutil.copy(input_path, output_path)
+    except FileNotFoundError:
+        st.error("Ghostscript (gs) not found. Please ensure it's installed and in your PATH.")
+        shutil.copy(input_path, output_path) # Copy original if gs not found
+    except Exception as e:
+        st.error(f"An unexpected error occurred during Ghostscript compression for {input_path.name}: {e}. Copying original.")
+        shutil.copy(input_path, output_path)
     finally:
-        if ocr and temp_input != input_path and Path(temp_input).exists():
-            # Clean up the temporary OCR'd file
-            Path(temp_input).unlink()
+        if ocr and temp_input != input_path and temp_input.exists():
+            # Clean up the temporary OCR'd file if it was created
+            temp_input.unlink(missing_ok=True)
 
 
 def extract_zip(file, destination):
@@ -103,24 +108,21 @@ def process_files_to_target_size(uploaded_files, target_size, ocr_enabled=False)
     if non_pdf_total_size >= target_size:
         return None, None, f"📂 Non-PDF files alone ({humanfriendly.format_size(non_pdf_total_size)}) exceed the target size ({humanfriendly.format_size(target_size)})."
 
-    # Estimate compression impact (optional but optimal)
-    # This is a rough estimate; actual compression will vary.
-    # The current COMPRESSION_LEVELS values already have an estimated factor.
-    # We will use these factors for ordering the attempts.
-
     st.info("Starting compression attempts...")
     # Iterate through compression levels from lowest (best quality) to highest (worst quality)
-    for level, (gs_flag, _) in COMPRESSION_LEVELS.items():
-        st.write(f"Attempting compression level: **{level}%** (Quality setting: `{gs_flag}`)")
-        current_attempt_dir = Path(BASE_TEMP_DIR) / f"attempt_{level}"
+    # The dictionary items are already ordered from highest quality to lowest based on definition
+    for level_name, (gs_flag, _) in COMPRESSION_LEVELS.items():
+        st.write(f"Attempting compression level: **{level_name}** (Ghostscript setting: `{gs_flag}`)")
+        current_attempt_dir = Path(BASE_TEMP_DIR) / f"attempt_{level_name.replace('%', '').replace(' ', '_').replace('(', '').replace(')', '').lower()}"
         
         # Copy initial non-PDF files to the current attempt directory
         if current_attempt_dir.exists():
             shutil.rmtree(current_attempt_dir)
         current_attempt_dir.mkdir(parents=True, exist_ok=True)
         
+        # Copy non-PDFs to the current attempt directory
         for non_pdf_file in non_pdf_files_initial:
-            shutil.copy(non_pdf_file, current_attempt_dir / non_pdf_file.name) # Copy to root of attempt dir
+            shutil.copy(non_pdf_file, current_attempt_dir / non_pdf_file.name)
 
         compressed_pdf_paths = []
         total_current_size = non_pdf_total_size
@@ -129,59 +131,75 @@ def process_files_to_target_size(uploaded_files, target_size, ocr_enabled=False)
         
         for idx, pdf_path_initial in enumerate(pdf_files_initial):
             # Define output path for the compressed PDF within the current attempt's directory
-            compressed_pdf_name = f"compressed_{pdf_path_initial.name}"
+            # Ensure unique name to avoid overwrites if source files had same name
+            compressed_pdf_name = f"compressed_{uuid.uuid4().hex}_{pdf_path_initial.name}" 
             output_path = current_attempt_dir / compressed_pdf_name
             
             # Use original file for compression
             compress_pdf(pdf_path_initial, output_path, gs_flag, ocr=ocr_enabled)
             
             # Check if the compressed file exists and add its size
-            if output_path.exists():
+            if output_path.exists() and output_path.stat().st_size > 0: # Ensure file is not empty
                 actual_size = output_path.stat().st_size
                 total_current_size += actual_size
                 compressed_pdf_paths.append(output_path)
             else:
-                # If compression failed, add the original file's size and path to maintain content
-                st.warning(f"Compression failed for {pdf_path_initial.name}. Adding original file to total size.")
+                # If compression failed or resulted in empty file, use the original file
+                st.warning(f"Compression failed or resulted in an empty file for {pdf_path_initial.name} at level {level_name}. Using original file.")
                 total_current_size += pdf_path_initial.stat().st_size
-                compressed_pdf_paths.append(pdf_path_initial) # Keep original if compression fails
+                compressed_pdf_paths.append(pdf_path_initial)
                 
             progress_bar.progress((idx + 1) / len(pdf_files_initial))
         
         progress_bar.empty()
         
-        st.info(f"Total size for level {level}: {humanfriendly.format_size(total_current_size)}")
+        st.info(f"Total estimated size for level {level_name}: {humanfriendly.format_size(total_current_size)}")
 
         # Check if target size is met
         if total_current_size <= target_size:
-            st.success(f"✅ Target size met with compression level {level}!")
+            st.success(f"✅ Target size met with compression level **{level_name}**!")
             # Consolidate all files (compressed PDFs + non-PDFs) to the OUTPUT_DIR
             final_output_files = []
             if Path(OUTPUT_DIR).exists():
                 shutil.rmtree(OUTPUT_DIR)
             Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 
-            for file_to_copy in non_pdf_files_initial + compressed_pdf_paths:
-                # Ensure unique names if multiple files have the same name (e.g., from different subdirs in a zip)
-                # For simplicity, we'll just copy the file name. If there are duplicates in the original set,
-                # this will overwrite, which might be a desired behavior for the use case.
-                # A more robust solution would involve preserving directory structure or renaming.
-                destination_path = Path(OUTPUT_DIR) / file_to_copy.name
-                shutil.copy(file_to_copy, destination_path)
-                final_output_files.append(destination_path)
+            # Copy all relevant files to the final OUTPUT_DIR
+            for file_to_copy in non_pdf_files_initial: # Original non-PDFs
+                shutil.copy(file_to_copy, Path(OUTPUT_DIR) / file_to_copy.name)
+                final_output_files.append(Path(OUTPUT_DIR) / file_to_copy.name)
             
-            # Clean up all temporary attempt directories
-            shutil.rmtree(processing_temp_dir)
+            for file_to_copy in compressed_pdf_paths: # Compressed PDFs (or originals if compression failed)
+                # Ensure unique names in the final output directory for PDFs
+                final_pdf_name = file_to_copy.name
+                if "compressed_" in final_pdf_name:
+                    # Remove the 'compressed_' prefix and uuid if present from previously generated name
+                    parts = final_pdf_name.split("_")
+                    if len(parts) > 2 and len(parts[1]) == 32: # Check for uuid part
+                        final_pdf_name = "_".join(parts[2:]) # Reconstruct name without prefix and uuid
+                    else:
+                        final_pdf_name = "_".join(parts[1:]) # Just remove 'compressed_'
+                
+                # If there's still a risk of name collision, append a small hash
+                destination_path_candidate = Path(OUTPUT_DIR) / final_pdf_name
+                if destination_path_candidate.exists():
+                    final_pdf_name = f"{Path(final_pdf_name).stem}_{uuid.uuid4().hex[:4]}{Path(final_pdf_name).suffix}"
+                    
+                shutil.copy(file_to_copy, Path(OUTPUT_DIR) / final_pdf_name)
+                final_output_files.append(Path(OUTPUT_DIR) / final_pdf_name)
+            
+            # Clean up all temporary attempt directories and the processing_temp_dir
+            shutil.rmtree(processing_temp_dir, ignore_errors=True)
             for attempt_dir in Path(BASE_TEMP_DIR).glob("attempt_*"):
-                shutil.rmtree(attempt_dir)
+                shutil.rmtree(attempt_dir, ignore_errors=True)
 
             return final_output_files, [], None
 
-    # If no level met the target size
-    shutil.rmtree(processing_temp_dir)
+    # If no level met the target size after trying all
+    shutil.rmtree(processing_temp_dir, ignore_errors=True)
     for attempt_dir in Path(BASE_TEMP_DIR).glob("attempt_*"):
-        shutil.rmtree(attempt_dir)
-    return None, None, f"❌ Even with maximum compression, the total size could not be reduced to {humanfriendly.format_size(target_size)}. Smallest achieved was {humanfriendly.format_size(total_current_size)}."
+        shutil.rmtree(attempt_dir, ignore_errors=True)
+    return None, None, f"❌ Even with the highest compression applied, the total size could not be reduced to {humanfriendly.format_size(target_size)}. The smallest achieved total size was {humanfriendly.format_size(total_current_size)}."
 
 
 def zip_files(file_paths, zip_name="Optimized_Files.zip"):
@@ -222,7 +240,7 @@ if uploaded_files and st.button("🚀 Optimize and Download"):
     # Clean up previous session's temp directory if it exists, and recreate
     if os.path.exists(BASE_TEMP_DIR):
         st.info("Cleaning up previous session data...")
-        shutil.rmtree(BASE_TEMP_DIR)
+        shutil.rmtree(BASE_TEMP_DIR, ignore_errors=True) # ignore_errors for robustness
     os.makedirs(INPUT_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True) # Ensure OUTPUT_DIR exists for final files
 
@@ -232,28 +250,21 @@ if uploaded_files and st.button("🚀 Optimize and Download"):
     if selected_files is None:
         st.error(error_msg)
     else:
-        zip_data = zip_files(selected_files)
-        st.success("✅ Optimization complete!")
-        
-        # Display final size
-        final_zip_size = humanfriendly.format_size(len(zip_data.getvalue()))
-        st.info(f"The final optimized ZIP file size is: **{final_zip_size}**")
+        # Before zipping, ensure all files actually exist at the paths
+        existing_selected_files = [f for f in selected_files if f.exists()]
+        if not existing_selected_files:
+            st.error("Something went wrong. No files were prepared for zipping after optimization.")
+        else:
+            zip_data = zip_files(existing_selected_files)
+            st.success("✅ Optimization complete!")
+            
+            # Display final size
+            final_zip_size = humanfriendly.format_size(len(zip_data.getvalue()))
+            st.info(f"The final optimized ZIP file size is: **{final_zip_size}**")
 
-        st.download_button(
-            "📦 Download Optimized ZIP",
-            zip_data,
-            file_name="Optimized_Files.zip",
-            mime="application/zip"
-        )
-
-# Clean up session directory when done or on rerun
-def cleanup_session_dir():
-    if os.path.exists(BASE_TEMP_DIR):
-        shutil.rmtree(BASE_TEMP_DIR)
-
-# This might be tricky in Streamlit's rerun model.
-# For a more robust cleanup, consider using st.experimental_singleton for resources
-# or a mechanism that triggers on app close/tab close, which Streamlit doesn't directly expose.
-# For now, we clean at the start of processing and rely on OS to clean temp dirs on restart.
-# Alternatively, a button for manual cleanup can be added.
-# st.sidebar.button("Clean up temporary files", on_click=cleanup_session_dir) # Optional: Add a cleanup button
+            st.download_button(
+                "📦 Download Optimized ZIP",
+                zip_data,
+                file_name="Optimized_Files.zip",
+                mime="application/zip"
+            )
