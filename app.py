@@ -65,7 +65,6 @@ def process_files(files, level):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     temp_dir = Path(OUTPUT_DIR)
 
-    # Step 1: Save and extract ZIPs
     for file in files:
         ext = file.name.split(".")[-1].lower()
         path = temp_dir / file.name
@@ -75,27 +74,18 @@ def process_files(files, level):
             extract_zip(path, temp_dir)
             path.unlink()
 
-    # Step 2: Count total files for progress bar
-    all_files = []
-    for root, _, file_list in os.walk(temp_dir):
-        for fname in file_list:
-            all_files.append(Path(root) / fname)
-
-    progress = st.progress(0)
-    total = len(all_files)
-
-    # Step 3: Process files with progress tracking
-    for i, fpath in enumerate(all_files):
-        if fpath.suffix.lower() == ".pdf":
-            out_path = fpath.parent / f"compressed_{fpath.name}"
-            compress_pdf(fpath, out_path, level)
-            fpath.unlink()
-            out_path.rename(fpath)
-        progress.progress((i + 1) / total)
+    for root, _, files_in_dir in os.walk(temp_dir):
+        for name in files_in_dir:
+            fpath = Path(root) / name
+            if fpath.suffix.lower() == ".pdf":
+                out_path = fpath.parent / f"compressed_{fpath.name}"
+                compress_pdf(fpath, out_path, level)
+                fpath.unlink()
+                out_path.rename(fpath)
 
     return temp_dir
 
-# --- Streamlit UI ---
+# Streamlit UI
 st.set_page_config(page_title="Smart File Compressor", layout="wide")
 st.title("📂 Compress Files (PDFs, ZIPs, etc.)")
 
@@ -107,7 +97,7 @@ st.markdown("Upload files to compress all PDFs according to the selected level a
 uploaded = st.file_uploader("📁 Upload files", accept_multiple_files=True)
 
 if uploaded and st.button("🚀 Compress & Download"):
-    with st.spinner("Processing your files..."):
+    with st.spinner("Processing..."):
         output_folder = process_files(uploaded, level)
 
     zip_buffer = zip_files_with_structure(output_folder)
