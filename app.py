@@ -1,14 +1,13 @@
 import streamlit as st
 import os
 import shutil
-import subprocess
 import zipfile
 import fitz  # PyMuPDF
 from pathlib import Path
 from io import BytesIO
 import uuid
 
-# --- Setup persistent session directory ---
+# Setup session-based folders
 SESSION_ID = st.session_state.get("session_id", str(uuid.uuid4()))
 st.session_state["session_id"] = SESSION_ID
 BASE_TEMP_DIR = f"temp_storage_{SESSION_ID}"
@@ -17,41 +16,7 @@ OUTPUT_DIR = os.path.join(BASE_TEMP_DIR, "output")
 os.makedirs(INPUT_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# --- Utility Functions ---
-def is_image_heavy_pdf(path, threshold=0.3):
-    try:
-        with fitz.open(path) as doc:
-            image_pages = 0
-            for page in doc:
-                images = page.get_images()
-                if images:
-                    image_pages += 1
-            return (image_pages / len(doc)) >= threshold
-    except:
-        return False
-
-def compress_pdf_ghostscript(input_path, output_path, quality="recommended"):
-    quality_map = {
-        "recommended": "/ebook",
-        "high": "/screen",
-        "low": "/printer"
-    }
-    gs_quality = quality_map.get(quality, "/ebook")
-    try:
-        subprocess.run([
-            "gs",
-            "-sDEVICE=pdfwrite",
-            "-dCompatibilityLevel=1.4",
-            f"-dPDFSETTINGS={gs_quality}",
-            "-dNOPAUSE",
-            "-dQUIET",
-            "-dBATCH",
-            f"-sOutputFile={output_path}",
-            str(input_path)
-        ], check=True)
-    except subprocess.CalledProcessError:
-        shutil.copy(input_path, output_path)
-
+# Compress PDF using PyMuPDF (image-based)
 def compress_pdf_pymupdf(input_path, output_path, dpi=100):
     doc = fitz.open(input_path)
     images = []
@@ -61,19 +26,12 @@ def compress_pdf_pymupdf(input_path, output_path, dpi=100):
         images.append(img_bytes)
     doc.close()
 
-    # Create new PDF with rasterized images
     pdf_doc = fitz.open()
     for img_data in images:
         img_pdf = fitz.open("pdf", fitz.open("png", img_data).convert_to_pdf())
         pdf_doc.insert_pdf(img_pdf)
     pdf_doc.save(output_path)
     pdf_doc.close()
-
-def hybrid_compress_pdf(input_path, output_path, ghostscript_level="recommended", pymupdf_dpi=100):
-    if is_image_heavy_pdf(input_path):
-        compress_pdf_pymupdf(input_path, output_path, dpi=pymupdf_dpi)
-    else:
-        compress_pdf_ghostscript(input_path, output_path, quality=ghostscript_level)
 
 def extract_zip(file_path, dest):
     with zipfile.ZipFile(file_path, 'r') as zip_ref:
@@ -100,40 +58,39 @@ def preserve_zip_structure(file_list, base_folder):
     zip_buffer.seek(0)
     return zip_buffer
 
-# --- Streamlit UI ---
-st.set_page_config(page_title="📄 Smart PDF Compressor", layout="wide")
-st.title("📄 Smart PDF Compressor & Folder Zipper")
+# UI
+st.set_page_config(page_title="📄 PDF Compressor (Cloud)", layout="wide")
+st.title("📄 PDF Compressor & Folder Zipper (Cloud-Ready)")
 
-st.sidebar.header("🔧 Compression Settings")
-compression_level = st.sidebar.selectbox("Compression Level", ["recommended", "high", "low"])
-pymupdf_dpi = st.sidebar.slider("Image DPI (for image-heavy PDFs)", 50, 150, 100)
+st.sidebar.header("🛠️ Compression Settings")
+pymupdf_dpi = st.sidebar.slider("Image DPI (lower = smaller size)", 50, 150, 100)
 
-uploaded_files = st.file_uploader("📁 Upload your files/folders (ZIP, PDF, etc)", accept_multiple_files=True)
+uploaded_files = st.file_uploader("📁 Upload files or ZIPs", accept_multiple_files=True)
 
 if uploaded_files and st.button("🚀 Compress & Download"):
-    # Reset session directories
     shutil.rmtree(BASE_TEMP_DIR, ignore_errors=True)
     os.makedirs(INPUT_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    with st.spinner("Processing files..."):
-        save_uploaded_files(uploaded_files, INPUT_DIR)
-        all_files = get_all_files(INPUT_DIR)
+    save_uploaded_files(uploaded_files, INPUT_DIR)
+    all_files = get_all_files(INPUT_DIR)
 
-        processed_files = []
-        progress = st.progress(0)
-        for idx, file_path in enumerate(all_files):
-            out_path = Path(OUTPUT_DIR) / file_path.relative_to(INPUT_DIR)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
+    processed_files = []
+    progress = st.progress(0)
 
-            if file_path.suffix.lower() == ".pdf":
-                hybrid_compress_pdf(file_path, out_path, ghostscript_level=compression_level, pymupdf_dpi=pymupdf_dpi)
-            else:
-                shutil.copy(file_path, out_path)
+    for idx, file_path in enumerate(all_files):
+        rel_path = file_path.relative_to(INPUT_DIR)
+        out_path = Path(OUTPUT_DIR) / rel_path
+        out_path.parent.mkdir(parents=True, exist_ok=True)
 
-            processed_files.append(out_path)
-            progress.progress((idx + 1) / len(all_files))
+        if file_path.suffix.lower() == ".pdf":
+            compress_pdf_pymupdf(file_path, out_path, dpi=pymupdf_dpi)
+        else:
+            shutil.copy(file_path, out_path)
+
+        processed_files.append(out_path)
+        progress.progress((idx + 1) / len(all_files))
 
     st.success(f"✅ Done! {len(processed_files)} files processed.")
-    zip_data = preserve_zip_structure(processed_files, OUTPUT_DIR)
-    st.download_button("📦 Download Compressed Folder as ZIP", zip_data, file_name="Compressed_Output.zip", mime="application/zip")
+    zip_file = preserve_zip_structure(processed_files, OUTPUT_DIR)
+    st.download_button("📦 Download Compressed ZIP", zip_file, file_name="compressed_output.zip", mime="application/zip")
